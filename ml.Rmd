@@ -1,0 +1,922 @@
+---
+title: "machine learning coursework"
+author: "liu yu xun"
+date: "2026-03-31"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+----------------------
+#Set working directory
+```{r}
+setwd(":/Users/Documents/ST3189Coursework"")
+```
+
+#Install packages
+```{r}
+install.packages("tidyverse")
+install.packages("factoextra")
+install.packages("cluster")
+install.packages("ggplot2")
+install.packages("corrplot")
+install.packages("reshape2")
+install.packages("readr")
+install.packages("knitr")
+install.packages("kableExtra")
+install.packages("ggcorrplot")
+``` 
+
+#Load libraries
+```{r}
+library(tidyverse)
+library(factoextra)
+library(cluster)
+library(ggplot2)
+library(corrplot)
+library(reshape2)
+library(readr)
+library(knitr)
+library(kableExtra)
+library(ggcorrplot)
+
+set.seed(12)
+```
+
+#Unsupervised Learning
+
+##Load the cost of living data
+```{r}
+cost_of_living_df <- read_csv("Desktop/machine learning cw/datasets/cost-of-living_v2.csv")
+View(cost_of_living_df)
+summary(cost_of_living_df)
+```
+
+##Ensure all feature columns are numeric
+```{r}
+id_cols <- c("city", "country")
+num_cols <- setdiff(colnames(cost_of_living_df), id_cols)
+
+for (col in num_cols) {
+  cost_of_living_df[[col]] <- suppressWarnings(as.numeric(cost_of_living_df[[col]]))
+}
+```
+
+##Check for missing values
+```{r}
+sum(is.na(cost_of_living_df))
+```
+
+##Drop columns with more than 30% missing values
+```{r}
+missing_pct <- colSums(is.na(cost_of_living_df[, num_cols])) / nrow(cost_of_living_df) * 100
+drop_cols   <- names(missing_pct[missing_pct > 30])
+print(drop_cols)
+
+cost_of_living_df <- cost_of_living_df %>% select(-all_of(drop_cols))
+num_cols <- setdiff(colnames(cost_of_living_df), id_cols)
+```
+
+##Impute missing values with column median
+```{r}
+cost_of_living_df <- cost_of_living_df %>% mutate(across(all_of(num_cols),
+                    ~ ifelse(is.na(.), median(., na.rm=TRUE), .)))
+```
+
+##Check for duplicate rows
+```{r}
+sum(duplicated(cost_of_living_df))
+```
+
+##Exploratory Data Analysis (EDA)
+```{r}
+#Select 9 variables to plot
+vars_9 <- c("x1","x23","x24","x31","x33","x36","x45","x48","x54")
+labels_9 <- c("Restaurant meal", "Water(1.5L)", "Wine (bottle)",
+              "Taxi (1km)", "Gasoline (1L)", "Utilities",
+              "Dress", "1 Bedroom Apartment Rent (City)", "Monthly Net Salary")
+plot_data <- cost_of_living_df %>%
+              select(all_of(vars_9)) %>%
+              setNames(labels_9) %>%        
+              pivot_longer(everything(),
+                  names_to  = "Variable",
+                  values_to = "Value") %>%
+              filter(!is.na(Value))
+#Generate distribution plots
+ggplot(plot_data, aes(x = Value)) +
+     geom_histogram(bins = 30, fill = "blue",
+                    colour = "white", alpha = 0.85) +
+     facet_wrap(~ Variable,
+                scales = "free",     
+                ncol   = 3) +        
+     labs(title = "Distribution Plot",
+          x     = "Price (USD)",
+          y     = "Count") +
+     theme_minimal() +
+     theme(strip.text = element_text(size = 5, face = "bold"),
+           axis.text  = element_text(size = 5))
+
+#Most and least expensive cities to rent a 1 bedroom apartment in the city centre
+rent_onebed_city_col <- "x48"
+top10_expensive <- cost_of_living_df %>% 
+                    arrange(desc(.data[[rent_onebed_city_col]])) %>% 
+                    select(city, country, all_of(rent_onebed_city_col)) %>% 
+                    head(10)
+
+top10_cheapest <- cost_of_living_df %>% 
+                  arrange(.data[[rent_onebed_city_col]]) %>%
+                  select(city, country, all_of(rent_onebed_city_col)) %>% 
+                  head(10)
+
+#Correlation heatmap of price variables
+#Select key columns by catergories
+key_cols <- c("x1",     # Food - restaurant meal
+              "x6",     # Beverage - coffee
+              "x16",    # Food - fruits
+              "x23",    # Beverage - water
+              "x24",    # Beverage - alcohol
+              "x31",    # Transport - taxi 
+              "x33",    # Transport - gasoline
+              "x34",    # Transport - Volkswagen Golf 1.4 90KW Trendline or equivalent new car
+              "x36",    # Bills - apartment
+              "x39",    # Bills - fitness club
+              "x45",    # Clothing - dress
+              "x48",    # Housing - 1 bedroom apartment in the city center
+              "x54")    # Wages - monthly net salary
+corr_matrix  <- cor(cost_of_living_df[, key_cols], use = "complete.obs")
+
+#Plot the correlation heatmap
+corrplot(corr_matrix,
+         method  = "color",
+         type    = "upper",
+         tl.cex  = 0.8,
+         tl.col  = "black",
+         addCoef.col = "black",
+         number.cex  = 0.55,
+         title   = "Correlation Heatmap — Key Price Variables",
+         mar     = c(0, 0, 2, 0)
+)
+```
+
+##Principal Component Analysis (PCA)
+```{r}
+#Create new dataframe with price columns only and scale it
+prices_df <- cost_of_living_df[, num_cols]
+prices_df_scaled <- scale(prices_df)
+pca_result <- prcomp(prices_df_scaled, center=FALSE, scale.=FALSE)
+
+#Generate scree plotto visualise variance explained per component
+scree_plot <- fviz_eig(pca_result, addlabels=TRUE, ncp=15, barfill="blue", barcolor="white", main="PCA scree plot — variance explained per component")
+print(scree_plot)
+
+#Compute cumulative variance explained
+cumulative_var <- cumsum(pca_result$sdev^2 / sum(pca_result$sdev^2)) * 100
+
+#Create new data frame for plotting scree plot
+scree2_df <- data.frame(PC = seq_along(cumulative_var), Variance = cumulative_var)
+
+#Generate scree plot to visualise cumulative variance explained
+ggplot(scree2_df, aes(x = PC, y = Variance)) +
+  geom_line(color = "blue") +
+  geom_point(size = 1, color = "blue") +
+  scale_x_continuous(breaks = seq(1, max(scree2_df$PC), by = 5)) +
+  scale_y_continuous(breaks = seq(0, 100, by = 10),  # <-- change to 100
+                     limits = c(0, 100)) +
+  theme_minimal() +
+  ggtitle("Scree Plot: Cumulative Variance Explained") +
+  xlab("Number of Components") +
+  ylab("Cumulative Variance Explained (%)")
+
+#How many components explain at least 80% of variance?
+n_comp_80 <- which(cumulative_var >= 80)[1]
+
+#Top contributing variables to PC1 and PC2
+loadings_df <- as.data.frame(pca_result$rotation[, 1:4])
+loadings_df$Feature <- rownames(loadings_df)
+
+print(loadings_df %>%
+        arrange(desc(abs(PC1))) %>%
+        select(Feature, PC1) %>%
+        head(10))
+
+print(loadings_df %>%
+        arrange(desc(abs(PC2))) %>%
+        select(Feature, PC2) %>%
+        head(10))
+```
+
+##K-Means Clustering
+```{r}
+set.seed(12)
+#Find optimal k using elbow method
+wss_values <- sapply(1:12, function(k) {
+  kmeans(prices_df_scaled, centers=k, nstart=25, iter.max=200)$tot.withinss
+})
+
+plot(1:12, wss_values,
+      type = "b", pch = 19, cex = 1.2,
+      col  = "blue",
+      xlab = "Number of clusters (k)",
+      ylab = "Total within-cluster sum of squares (WSS)",
+      main = "Elbow method — optimal number of clusters")
+abline(v = which(diff(diff(wss_values)) == max(diff(diff(wss_values)))) + 1, col = "red", lty = 2, lwd = 1.5)
+
+#Find optimal k using silhouette method
+fviz_nbclust(prices_df_scaled,
+              kmeans,
+              method = "silhouette",
+              k.max  = 12,
+              nstart = 25) +
+              labs(title = "Silhouette method — optimal number of clusters")
+
+#Set the number of clusters
+optimal_k <- 2
+
+#Apply K-Means Clustering
+set.seed(12)
+kmeans_result  <- kmeans(prices_df_scaled, centers = optimal_k, nstart = 50, iter.max = 300)
+cost_of_living_df$Cluster <- as.factor(kmeans_result$cluster)
+print(table(cost_of_living_df$Cluster))
+
+#Visualise clusters on PCA plot
+fviz_cluster(kmeans_result,
+              data         = prices_df_scaled,
+              geom         = "point",
+              ellipse.type = "convex",
+              palette      = c("green", "blue",
+                               "red", "purple",
+                               "orange")[1:optimal_k],
+              alpha        = 0.5,
+              ggtheme      = theme_minimal(),
+              main         = paste0("K-Means Clusters (k = ",
+                                    optimal_k, ") — PCA Projection"))
+
+#Box plot of monthly net salary by cluster
+ggplot(cost_of_living_df, aes(x = Cluster, y = x54, fill = Cluster)) +
+  geom_boxplot(alpha = 0.85, outlier.size = 1) +
+  scale_fill_manual(values = c("green", "blue")[1:optimal_k]) +
+  labs(title = "Monthly Net Salary by cluster",
+       x = "Cluster", y = "Monthly Net Salary (USD)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+##Hierarchical CLustering
+```{r}
+#Use a sample of 300 cities as using all 4700 is not viable for reading dendrogram
+samplecities  <- sample(1:nrow(prices_df_scaled), 300)
+hc_data     <- prices_df_scaled[samplecities, ]
+hc_labels   <- cost_of_living_df$city[samplecities]
+
+#Compute Euclidean distance
+hc_dist   <- dist(hc_data, method = "euclidean")
+
+#Use Ward's method
+hc_result <- hclust(hc_dist, method = "ward.D2")
+
+#Generate dendrogram
+plot(hc_result,
+     labels = FALSE,
+     hang = -1,
+     cex = 0.6,
+     main = paste0("Hierarchical Clustering Dendrogram\n",
+                     "(random sample of 300 cities)"),
+     xlab = "Cities",
+     sub = "")
+
+rect.hclust(hc_result,
+             k = optimal_k,
+             border = c("green", "blue")[1:optimal_k])
+
+#Cut the tree
+hc_clusters <- cutree(hc_result, k = optimal_k)
+print(table(hc_clusters))
+
+#Calculate the difference between cluster medians for each variable
+cluster_diff <- cost_of_living_df %>%
+  group_by(Cluster) %>%
+  summarise(across(all_of(key_cols),
+                   ~ median(.x, na.rm = TRUE))) %>%
+  pivot_longer(-Cluster,
+               names_to  = "Variable",
+               values_to = "Median") %>%
+  pivot_wider(names_from  = Cluster,
+              values_from = Median) %>%
+  mutate(Difference = abs(`1` - `2`)) %>%
+  arrange(desc(Difference))
+
+print(head(cluster_diff, 10))
+```
+
+#Regression
+
+#Install packages
+```{r}
+install.packages("caret")
+install.packages("glmnet")
+install.packages("rpart")
+install.packages("rpart.plot")
+install.packages("randomForest")
+install.packages("ranger")
+``` 
+##Load libraries
+```{r}
+library(caret)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(ranger)
+
+set.seed(12)
+```
+
+##Load hotel reservations dataset
+```{r}
+Hotel_Reservations <- read_csv("Desktop/machine learning cw/datasets/Hotel Reservations.csv")
+View(Hotel_Reservations)
+```
+
+##Check for missing values
+```{r}
+any(is.na(Hotel_Reservations))
+```
+
+##Preprocessing
+```{r}
+#Remove identifier columns
+hotel_df <- Hotel_Reservations %>% 
+            select(-any_of(c("Booking_ID")))
+ 
+#Convert categorical variables into factors
+hotel_df <- hotel_df %>%
+            mutate(across(c(type_of_meal_plan, room_type_reserved,
+                  market_segment_type, booking_status,
+                  repeated_guest, required_car_parking_space),
+                  as.factor))
+
+#Remove rows where avg_price_per_room is 0
+hotel_df <- hotel_df %>%
+            filter(!is.na(avg_price_per_room), avg_price_per_room > 0)
+```
+
+##Exploratory Data Analysis (EDA)
+```{r}
+#Distribution of room prices
+ggplot(hotel_df, aes(x = avg_price_per_room)) +
+  geom_histogram(bins = 50, fill = "blue", colour="white", alpha = 0.7) +
+  labs(title = "Distribution of Average Room Prices Per Night", x = "Price (Euros)", y = "Count")
+
+#Correlation between numeric variables and room prices
+reg_numeric <- hotel_df %>%
+                select(where(is.numeric))   
+
+corr_matrix <- cor(reg_numeric, use = "complete.obs")
+
+#Generate correlation heatmap
+corrplot::corrplot(corr_matrix,
+                   method      = "color",
+                   type        = "upper",
+                   tl.col      = "black",
+                   tl.cex      = 0.65,
+                   addCoef.col = "black",
+                   number.cex  = 0.5,
+                   mar         = c(0, 0, 2, 0))
+```
+
+##Prepare regression data
+```{r}
+#Remove booking status due to data leakage
+reg_data <- hotel_df %>%
+  select(-c(booking_status)) %>%
+  na.omit()
+
+#Train/Test split 80/20
+train_index <- createDataPartition(reg_data$avg_price_per_room, p = 0.8, list = FALSE)
+train_reg <- reg_data[train_index, ]
+test_reg <- reg_data[-train_index, ]
+
+#10-fold cross-validation
+cv_ctrl <- trainControl(method      = "cv",
+                        number      = 10,
+                        verboseIter = FALSE)
+```
+
+##Linear Regression
+```{r}
+lm_model <- train(avg_price_per_room ~ .,
+                  data       = train_reg,
+                  method     = "lm",
+                  trControl  = cv_ctrl,
+                  preProcess = c("nzv"))   # removes near-zero variance columns
+summary(lm_model)
+
+lm_predicts <- predict(lm_model, test_reg)
+lm_rmse <- RMSE(lm_predicts, test_reg$avg_price_per_room)
+lm_mae  <- MAE(lm_predicts,  test_reg$avg_price_per_room)
+lm_r2   <- R2(lm_predicts,   test_reg$avg_price_per_room)
+
+#Identify significant coefficients
+lm_coef <- summary(lm_model$finalModel)$coefficient
+print(round(lm_coef[lm_coef[, 4] < 0.05, ], 4))
+
+#Generate diagnostic plots
+par(mfrow = c(2, 2))
+plot(lm_model$finalModel, main = "Linear Regression diagnostics")
+par(mfrow = c(1, 1))
+```
+
+##Ridge Regression
+```{r}
+#Convert training data into a matrix format
+x_train <- model.matrix(avg_price_per_room ~ ., train_reg)[, -1]
+y_train <- train_reg$avg_price_per_room
+
+#Convert test data into matrix format
+x_test  <- model.matrix(avg_price_per_room ~ ., test_reg)[, -1]
+y_test <- test_reg$avg_price_per_room
+
+#Fit ridge with cross-validation 
+ridge_cv <- cv.glmnet(x_train, y_train, alpha = 0, nfolds = 10)
+
+#Compute lambda value that gives minimum cross-validated error
+ridge_lambda <- ridge_cv$lambda.min
+print(ridge_lambda)
+
+#Predict room prices on the test set using optimal lambda
+ridge_pred <- predict(ridge_cv, s = ridge_lamba, newx = x_test)
+
+#Compute RMSE, R^2, MAE
+ridge_rmse <- RMSE(as.vector(ridge_pred), test_reg$avg_price_per_room)
+ridge_r2 <- R2(as.vector(ridge_pred),   test_reg$avg_price_per_room)
+ridge_mae <- MAE(as.vector(ridge_pred),  test_reg$avg_price_per_room)
+
+#Create new data frame with actual and predicted prices
+ridge_plot <- data.frame(
+  Actual    = test_reg$avg_price_per_room,
+  Predicted = as.vector(ridge_pred)
+)
+
+#Generate the ridge scatter plot
+ggplot(ridge_plot, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5, colour = "grey") +
+  geom_abline(slope = 1, intercept = 0,
+              colour = "red", linetype = "dashed", linewidth = 0.8) +
+  labs(title    = "Ridge Regression: Predicted vs Actual Room Price",
+       subtitle = paste0("RMSE = ", round(ridge_rmse, 2),
+                         " | MAE = ",  round(ridge_mae, 2),
+                         " | R² = ",   round(ridge_r2,  3)),
+       x = "Actual Price (EUR)",
+       y = "Predicted Price (EUR)") +
+  theme_minimal()
+```
+
+##Lasso Regression
+```{r}
+#Fit Lasso with cross-validation 
+lasso_cv <- cv.glmnet(x_train, y_train, alpha = 1, nfolds = 10)
+
+#Compute lambda value
+lasso_lambda <- lasso_cv$lambda.min
+print(lasso_lambda)
+
+#Predict room prices on test set with optimal lambda
+lasso_pred <- predict(lasso_cv, s = lasso_lambda, newx = x_test)
+
+#Compute RMSE, R^2, MAE
+lasso_rmse <- RMSE(as.vector(lasso_pred), test_reg$avg_price_per_room)
+lasso_r2   <- R2(as.vector(lasso_pred), test_reg$avg_price_per_room)
+lasso_mae  <- MAE(as.vector(lasso_pred), test_reg$avg_price_per_room)
+
+#Feature selection
+lasso_coeffs <- coef(lasso_cv, s = lasso_lambda)
+lasso_df    <- data.frame(
+  Feature     = rownames(lasso_coeffs),
+  Coefficient = round(as.numeric(lasso_coeffs), 4)
+) %>%
+  filter(Feature != "(Intercept)") %>%
+  arrange(desc(abs(Coefficient)))
+
+lasso_kept <- lasso_df %>% filter(Coefficient != 0)
+lasso_removed <- lasso_df %>% filter(Coefficient == 0)
+
+print(lasso_kept)
+print(lasso_removed)
+
+#Generate ranked features plot
+ggplot(lasso_kept,
+       aes(x = reorder(Feature, abs(Coefficient)),
+           y = Coefficient,
+           fill = Coefficient > 0)) +
+  geom_bar(stat = "identity", alpha = 0.85) +
+  scale_fill_manual(values = c("orange", "green"),
+                    labels = c("Negative", "Positive")) +
+  coord_flip() +
+  labs(title    = "Lasso: Retained Feature Coefficients",
+       subtitle = paste0("Optimal Lambda = ",
+                         round(lasso_lambda, 5),
+                         " | Features kept = ", nrow(lasso_kept),
+                         " | Features removed = ", nrow(lasso_removed)),
+       x    = NULL,
+       y    = "Coefficient",
+       fill = "Direction") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+#Create new data frame with actual and predicted prices
+lasso_plot <- data.frame(Actual = y_test, Predicted = lasso_pred)
+print(head(lasso_plot))
+colnames(lasso_plot) <- c("Actual", "Predicted")
+
+#Generate the lasso scatter plot
+ggplot(lasso_plot, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.5, color = "green") +
+  geom_abline(slope = 1, intercept = 0,
+              color = "red", linetype = "dashed") +
+  labs(title = "Lasso Regression: Predicted vs Actual",
+       subtitle = paste0("RMSE = ", round(lasso_rmse, 2),
+                         " | MAE = ",  round(lasso_mae, 2),
+                         " | R² = ",   round(lasso_r2,  3)),
+       x = "Actual Price (EUR)", y = "Predicted Price (EUR)") +
+  theme_minimal()
+```
+
+##Random Forest
+```{r}
+#Set cross-validation rules 
+cv_ctrl_rf <- trainControl(method      = "cv",
+                            number      = 10,
+                            verboseIter = TRUE)   # shows fold progress
+
+#Train random forest model with ranger
+rf_model <- train(avg_price_per_room ~ .,
+                  data      = train_reg,
+                  method    = "ranger",
+                  trControl = cv_ctrl_rf,
+                  tuneGrid  = data.frame(
+                    mtry          = c(3, 5, 7),
+                    splitrule     = "variance",
+                    min.node.size = 5),
+                  num.trees  = 100,
+                  importance = "impurity")
+
+#Predict room prices
+rf_pred <- predict(rf_model, test_reg)
+
+#Compute RMSE, R^2, MAE
+rf_rmse <- RMSE(rf_pred, test_reg$avg_price_per_room)
+rf_r2   <- R2(rf_pred,   test_reg$avg_price_per_room)
+rf_mae  <- MAE(rf_pred,  test_reg$avg_price_per_room)
+
+print(rf_rmse)
+print(rf_r2)
+print(rf_mae)
+
+#Variable importance
+rf_impt <- varImp(rf_model)
+
+#Generate variable importance plot
+plot(rf_impt,
+     top  = 15,
+     main = "Random Forest: Variable Importance — Room Price Prediction")
+
+ggplot(rf_impt$importance %>%
+         tibble::rownames_to_column("Feature") %>%
+         arrange(desc(Overall)) %>%
+         head(15),
+       aes(x = reorder(Feature, Overall), y = Overall)) +
+  geom_bar(stat = "identity", fill = "green", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Random Forest: variable importance — room price",
+       x     = NULL,
+       y     = "Importance") +
+  theme_minimal()
+
+#Generate actual vs predicted scatter plot
+rf_plot <- data.frame( Actual = test_reg$avg_price_per_room, Predicted = rf_pred)
+
+ggplot(rf_plot, aes(x = Actual, y = Predicted)) +
+  geom_point(alpha = 0.4, colour = "pink") +
+  geom_abline(slope = 1, intercept = 0,
+              colour = "red", linetype = "dashed",
+              linewidth = 0.8) +
+  labs(title    = "Random Forest: Predicted vs Actual Room Price",
+       subtitle = paste0("RMSE = ", round(rf_rmse, 2),
+                         " | MAE = ", round(rf_mae,  2),
+                         " | R² = ",  round(rf_r2,   3)),
+       x = "Actual Price (EUR)",
+       y = "Predicted Price (EUR)") +
+  theme_minimal()
+```
+
+#Classification
+
+##Install packages
+```{r}
+install.packages("MASS")
+install.packages("e1071")
+install.packages("pROC")
+install.packages("kernlab")
+```
+
+##Load libraries
+```{r}
+library(MASS)       
+library(e1071)      
+library(pROC)   
+library(kernlab)
+```
+
+##Load hotel reservations data
+```{r}
+Hotel_Reservations <- read_csv("Desktop/machine learning cw/datasets/Hotel Reservations.csv")
+View(Hotel_Reservations)
+```
+
+##Preprocessing
+```{r}
+#Remove identifier columns
+hotel_df <- dplyr::select(Hotel_Reservations,
+                           -any_of(c("Booking_ID")))
+#Convert into factor
+hotel_df$booking_status <- as.factor(hotel_df$booking_status)
+
+#Convert categorical columns into factors
+cat_cols <- c("type_of_meal_plan", "room_type_reserved",
+              "market_segment_type")
+
+for (col in intersect(cat_cols, colnames(hotel_df))) {
+  hotel_df[[col]] <- as.factor(hotel_df[[col]])
+}
+
+hotel_df$repeated_guest <- as.factor(hotel_df$repeated_guest)
+hotel_df$required_car_parking_space <- as.factor(hotel_df$required_car_parking_space)
+```
+
+##Exploratory Data Analysis (EDA)
+```{r}
+#Find cancellation rate
+cancel_rate <- round(mean(hotel_df$booking_status == "Canceled") * 100, 1)
+print(cancel_rate)
+
+#Cancellation by market segment
+ggplot(hotel_df, aes(x = market_segment_type,
+                     fill = booking_status)) +
+  geom_bar(position = "fill", alpha = 0.85) +
+  scale_fill_manual(values = c("green", "orange"),
+                    labels = c("Not Cancelled", "Cancelled")) +
+  labs(title = "Cancellation Rate by Market Segment",
+       x = "Market Segment",
+       y = "Proportion",
+       fill = "Booking Status") +
+  theme_minimal()
+
+#Cancellation by meal plan
+ggplot(hotel_df, aes(x = type_of_meal_plan,
+                     fill = booking_status)) +
+  geom_bar(position = "fill", alpha = 0.85) +
+  scale_fill_manual(values = c("green", "orange"),
+                    labels = c("Not Cancelled", "Cancelled")) +
+  labs(title = "Cancellation Rate by Meal Plan",
+       x = "Meal Plan", y = "Proportion",
+       fill = "Booking Status") +
+  theme_minimal()
+```
+
+##Prepare classification data
+```{r}
+class_data <- hotel_df
+
+#Train/Test split 80/20
+train_idx  <- createDataPartition(class_data$booking_status,
+                                   p = 0.8, list = FALSE)
+train_class  <- class_data[train_idx, ]
+test_class   <- class_data[-train_idx, ]
+
+#10-fold cross-validation
+cv_ctrl_class <- trainControl(method = "cv",
+                        number = 10,
+                        classProbs = TRUE,
+                        summaryFunction = twoClassSummary,
+                        verboseIter = FALSE)
+```
+
+##Logistic regression
+```{r} 
+lr_model <- train(booking_status ~ .,
+                  data      = train_class,
+                  method    = "glm",
+                  family    = "binomial",
+                  trControl = cv_ctrl_class,
+                  metric    = "ROC")
+
+lr_pred  <- predict(lr_model, test_class)
+lr_prob  <- predict(lr_model, test_class, type = "prob")[, "Canceled"]
+lr_cfm <- confusionMatrix(lr_pred, test_class$booking_status, positive = "Canceled")
+print(lr_cfm)
+
+#Generate predicted probability distribution
+ggplot(data.frame(Prob = lr_prob,
+                  Actual = test_class$booking_status),
+       aes(x = Prob, fill = Actual)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
+  scale_fill_manual(values = c("orange", "green")) +
+  geom_vline(xintercept = 0.5, colour = "red",
+             linetype = "dashed", linewidth = 0.8) +
+  labs(title    = "Logistic Regression: Predicted Cancellation Probability",
+       subtitle = paste0("Accuracy = ",
+                         round(lr_cfm$overall["Accuracy"] * 100, 2), "%"),
+       x    = "Predicted Probability of Cancellation",
+       y    = "Count",
+       fill = "Actual status") +
+  theme_minimal()
+```
+
+##K-Nearest Neighbours (KNN)
+```{r} 
+#5-fold cross validation due to computational constraints
+cv_ctrl_fast <- trainControl(method          = "cv",
+                              number          = 5,
+                              classProbs      = TRUE,
+                              summaryFunction = twoClassSummary,
+                              verboseIter     = TRUE)
+
+knn_model <- train(booking_status ~ .,
+                   data      = train_class,
+                   method    = "knn",
+                   trControl = cv_ctrl_fast,
+                   metric    = "ROC",
+                   tuneGrid  = expand.grid(k = c(5, 9, 15)))
+
+knn_pred <- predict(knn_model, test_class)
+knn_prob <- predict(knn_model, test_class,
+                    type = "prob")[, "Canceled"]
+
+knn_cfm  <- confusionMatrix(knn_pred,
+                             test_class$booking_status,
+                             positive = "Canceled")
+print(knn_cfm)
+
+#Generate ROC by k
+plot(knn_model,
+     main = "KNN: ROC by Number of Neighbours (k)")
+```
+
+##Support Vector Machine (SVM)
+```{r} 
+svm_model <- train(booking_status ~ .,
+                   data       = train_class,
+                   method     = "svmRadial",
+                   trControl  = cv_ctrl_fast,
+                   metric     = "ROC",
+                   tuneLength = 3,              # reduced from 5
+                   preProcess = c("center", "scale"))
+print(svm_model)
+
+svm_pred <- predict(svm_model, test_class)
+svm_prob <- predict(svm_model, test_class,
+                    type = "prob")[, "Canceled"]
+
+svm_cfm  <- confusionMatrix(svm_pred,
+                             test_class$booking_status,
+                             positive = "Canceled")
+
+print(svm_cfm)
+```
+
+##Random Forest
+```{r} 
+cv_ctrl_rf <- trainControl(method          = "cv",
+                            number          = 10,
+                            classProbs      = TRUE,
+                            summaryFunction = twoClassSummary,
+                            verboseIter     = TRUE)
+
+rf_model2 <- train(booking_status ~ .,
+                  data      = train_class,
+                  method    = "ranger",
+                  trControl = cv_ctrl_rf,
+                  metric    = "ROC",
+                  tuneGrid  = data.frame(
+                    mtry          = c(3, 5, 7),
+                    splitrule     = "gini",
+                    min.node.size = 5),
+                  num.trees  = 100,
+                  importance = "impurity")
+
+rf_pred2  <- predict(rf_model2, test_class)
+rf_prob2  <- predict(rf_model2, test_class,
+                    type = "prob")[, "Canceled"]
+
+rf_cfm   <- confusionMatrix(rf_pred2,
+                             test_class$booking_status,
+                             positive = "Canceled")
+
+print(rf_cfm)
+
+#Feature importance plot
+rf_impt2 <- varImp(rf_model2)
+plot(rf_impt2, top = 15,
+     main = "Random Forest: Feature Importance — Cancellation")
+
+ggplot(rf_impt2$importance %>%
+         tibble::rownames_to_column("Feature") %>%
+         arrange(desc(Overall)) %>%
+         head(15),
+       aes(x = reorder(Feature, Overall), y = Overall)) +
+  geom_bar(stat = "identity", fill = "purple", alpha = 0.8) +
+  coord_flip() +
+  labs(title = "Random Forest: Feature Importance — Cancellation Prediction",
+       x = NULL, y = "Importance") +
+  theme_minimal()
+```
+
+##Compare models
+```{r} 
+# Store all confusion matrices in a named list
+cfm_list <- list(
+  "Logistic Regression" = lr_cfm,
+  "KNN"                 = knn_cfm,
+  "SVM"                 = svm_cfm,
+  "Random Forest"       = rf_cfm
+)
+
+# Extract all metrics in one block
+class_results <- data.frame(
+  Model       = names(cfm_list),
+  Accuracy    = round(sapply(cfm_list, function(x) x$overall["Accuracy"])    * 100, 2),
+  Sensitivity = round(sapply(cfm_list, function(x) x$byClass["Sensitivity"]) * 100, 2),
+  Specificity = round(sapply(cfm_list, function(x) x$byClass["Specificity"]) * 100, 2),
+  F1          = round(sapply(cfm_list, function(x) x$byClass["F1"])          * 100, 2),
+  row.names   = NULL
+)
+
+print(class_results)
+
+#Find the best model
+best_model <- class_results$Model[which.max(class_results$Accuracy)]
+
+#Generate bar chart
+ggplot(class_results,
+       aes(x    = reorder(Model, Accuracy),
+           y    = Accuracy,
+           fill = Model == best_model)) +
+  geom_bar(stat = "identity", width = 0.5, alpha = 0.8) +
+  geom_text(aes(label = paste0(Accuracy, "%")),
+            hjust = -0.1, size = 3) +
+  scale_fill_manual(values = c("grey", "pink")) +
+  coord_flip() + ylim(0, 110) +
+  labs(title = "Classification Model Comparison — Accuracy",
+       x = NULL, y = "Accuracy (%)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+#ROC curves
+roc_lr  <- roc(test_class$booking_status, lr_prob,
+               levels = c("Not_Canceled", "Canceled"),
+               quiet  = TRUE)
+roc_knn <- roc(test_class$booking_status, knn_prob,
+               levels = c("Not_Canceled", "Canceled"),
+               quiet  = TRUE)
+roc_svm <- roc(test_class$booking_status, svm_prob,
+               levels = c("Not_Canceled", "Canceled"),
+               quiet  = TRUE)
+roc_rf  <- roc(test_class$booking_status, rf_prob2,
+               levels = c("Not_Canceled", "Canceled"),
+               quiet  = TRUE)
+
+# Add AUC to results table
+class_results$AUC <- round(c(auc(roc_lr),  auc(roc_knn),
+                            auc(roc_svm), auc(roc_rf)), 3)
+print(class_results)
+
+#Best model by AUC
+class_results[which.max(class_results$AUC), ]
+
+# ROC curve plot — all four models
+plot(roc_rf,  col = "purple", lwd = 2,
+     main = "ROC Curves — all classification models")
+plot(roc_lr,  col = "orange", lwd = 2, add = TRUE)
+plot(roc_knn, col = "blue", lwd = 2, add = TRUE)
+plot(roc_svm, col = "green", lwd = 2, add = TRUE)
+abline(a = 0, b = 1, lty = 2, col = "gray")
+legend("bottomright",
+       legend = c(
+         paste0("Random Forest (AUC = ", round(auc(roc_rf),  3), ")"),
+         paste0("Logistic Reg  (AUC = ", round(auc(roc_lr),  3), ")"),
+         paste0("KNN           (AUC = ", round(auc(roc_knn), 3), ")"),
+         paste0("SVM           (AUC = ", round(auc(roc_svm), 3), ")")),
+       col = c("purple", "orange", "blue", "green"),
+       lwd = 2, cex = 0.8)
+
+#Best confusion matrix
+best_cfm <- switch(best_model,
+                   "Logistic Regression" = lr_cfm,
+                   "KNN"                 = knn_cfm,
+                   "SVM"                 = svm_cfm,
+                   "Random Forest"       = rf_cfm)
+print(best_cfm)
+```
+
