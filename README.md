@@ -111,7 +111,9 @@ Random Forest performed best on every metric. **Lead time** was the most importa
 
 ## Author
 
-Liu Yu Xun
+Liu Yu Xun · https://www.linkedin.com/in/yu-xun-liu/
+
+This was completed as an individual project.
 
 ## License
 
